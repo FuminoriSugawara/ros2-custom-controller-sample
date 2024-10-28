@@ -1,0 +1,9 @@
+<library path="custom_effort_controller">
+    <class name="custom_effort_controller/CustomEffortController"
+        type="custom_effort_controller::CustomEffortController"
+        base_class_type="controller_interface::ControllerInterface">
+        <description>
+            custom_effort_controller
+        </description>
+    </class>
+</library>
