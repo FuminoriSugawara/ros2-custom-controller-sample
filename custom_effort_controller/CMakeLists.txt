@@ -22,6 +22,8 @@ ament_target_dependencies(${PROJECT_NAME}
   effort_controllers
 )
 
+pluginlib_export_plugin_description_file(controller_interface custom_effort_controller_plugin.xml)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
