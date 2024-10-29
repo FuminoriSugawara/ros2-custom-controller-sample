@@ -150,7 +150,7 @@ namespace custom_velocity_controller
             {
                 // Sin波開始コマンドを受信したらHOMINGに移行
                 controller_state_ = ControllerState::RUNNING_SINE;
-                RCLCPP_INFO(get_node()->get_logger(), "Starting homing sequence");
+                RCLCPP_INFO(get_node()->get_logger(), "Starting sine wave");
             }
             break;
         }
