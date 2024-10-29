@@ -27,6 +27,23 @@ namespace custom_effort_controller
         controller_interface::return_type update(const rclcpp::Time &time, const rclcpp::Duration &period) override;
 
     private:
+        enum class ControllerState
+        {
+            IDLE,
+            RUNNING_SINE
+        };
+        struct JointConfig
+        {
+            std::string name;
+            double amplitude;
+            double frequency;
+            double phase;
+            bool is_target;
+            double current_position;
+            double current_velocity;
+            double current_effort;
+        };
+        std::vector<JointConfig> joint_configs_;
         std::vector<std::string> joint_names_;
         std::vector<std::string> state_interface_types_;
         std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>> joint_position_state_interface_;
@@ -39,10 +56,9 @@ namespace custom_effort_controller
                 {"velocity", &joint_velocity_state_interface_},
                 {"effort", &joint_effort_state_interface_},
                 };
-
-        double amplitude_ = 1.0;
-        double frequency_ = 1.0;
-        double phase_ = 0.0;
+        realtime_tools::RealtimeBuffer<bool> is_running_;
+        rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr command_subscriber_;
+        ControllerState controller_state_;
     };
 
 } // namespace custom_effort_controller
