@@ -37,6 +37,7 @@ namespace custom_position_controller
         auto target_joints = get_node()->get_parameter("target_joints").as_string_array();
         auto amplitudes = get_node()->get_parameter("amplitudes").as_double_array();
         auto frequencies = get_node()->get_parameter("frequencies").as_double_array();
+        joint_names_ = joints;
         homing_velocity_ = get_node()->get_parameter("homing_velocity").as_double();
         position_tolerance_ = get_node()->get_parameter("position_tolerance").as_double();
         controller_state_ = ControllerState::IDLE;
