@@ -172,13 +172,18 @@ namespace custom_position_controller
                 double current_pos = joint_configs_[i].current_position;
                 if (std::abs(current_pos) > position_tolerance_)
                 {
-                    // ゼロ位置までの移動指令を生成
-                    double command = current_pos > 0 ? current_pos - homing_velocity_ * period.seconds() : current_pos + homing_velocity_ * period.seconds();
+                    double command = 0.0;
+                    if (current_pos > 0) {
+                        command = std::max(0.0, current_pos - homing_velocity_);
+                    } else {
+                        command = std::min(0.0, current_pos + homing_velocity_);
+                    }
 
                     command_interfaces_[i].set_value(command);
                     all_joints_homed = false;
                 }
             }
+
 
             // すべてのジョイントがゼロ位置に到達したらSin波出力開始
             if (all_joints_homed)
