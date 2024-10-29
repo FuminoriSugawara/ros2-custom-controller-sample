@@ -92,33 +92,14 @@ namespace custom_position_controller
     controller_interface::return_type CustomPositionController::update(
         const rclcpp::Time &time, const rclcpp::Duration &period)
     {
-        // ForwardControllersBase::update method from
-        auto joint_commands = rt_command_ptr_.readFromRT();
-
-        // no command received yet
-        if (!joint_commands || !(*joint_commands))
-        {
-            return controller_interface::return_type::OK;
-        }
-
-        if ((*joint_commands)->data.size() != command_interfaces_.size())
-        {
-            RCLCPP_ERROR_THROTTLE(
-                get_node()->get_logger(), *(get_node()->get_clock()), 1000,
-                "command size (%zu) does not match number of interfaces (%zu)",
-                (*joint_commands)->data.size(), command_interfaces_.size());
-            return controller_interface::return_type::ERROR;
-        }
 
         phase_ += 2.0 * M_PI * frequency_ * period.seconds();
         double command = amplitude_ * sin(phase_);
 
         for (auto index = 0ul; index < command_interfaces_.size(); ++index)
         {
-            //command_interfaces_[index].set_value((*joint_commands)->data[index]);
             command_interfaces_[index].set_value(command);
         }
-        // ForwardControllersBase::update method until here
 
 
         for (size_t i = 0; i < joint_names_.size(); ++i)
@@ -128,8 +109,8 @@ namespace custom_position_controller
             auto &joint_effort = joint_effort_state_interface_[i].get();
             auto &joint_name = joint_names_[i];
 
-            RCLCPP_INFO(get_node()->get_logger(), "Joint %s, position: %f, velocity: %f, effort: %f",
-                        joint_name.c_str(), joint_position.get_value(), joint_velocity.get_value(), joint_effort.get_value());
+            //RCLCPP_INFO(get_node()->get_logger(), "Joint %s, position: %f, velocity: %f, effort: %f",
+            //            joint_name.c_str(), joint_position.get_value(), joint_velocity.get_value(), joint_effort.get_value());
         }
 
         return controller_interface::return_type::OK;

@@ -38,7 +38,11 @@ namespace custom_velocity_controller
                 {"position", &joint_position_state_interface_},
                 {"velocity", &joint_velocity_state_interface_},
                 {"effort", &joint_effort_state_interface_},
-                };
+            };
+
+        double amplitude_ = 1.0;
+        double frequency_ = 1.0;
+        double phase_ = 0.0;
     };
 
 } // namespace custom_velocity_controller
