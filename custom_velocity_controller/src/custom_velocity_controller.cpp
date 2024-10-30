@@ -128,6 +128,12 @@ namespace custom_velocity_controller
 
     controller_interface::CallbackReturn CustomVelocityController::on_deactivate(const rclcpp_lifecycle::State &)
     {
+        // Set velocity to zero
+        for (auto &command_interface : command_interfaces_)
+        {
+            command_interface.set_value(0.0);
+        }
+
         release_interfaces();
 
         return CallbackReturn::SUCCESS;
@@ -142,10 +148,17 @@ namespace custom_velocity_controller
             joint_configs_[i].current_velocity = joint_velocity_state_interface_[i].get().get_value();
             joint_configs_[i].current_effort = joint_effort_state_interface_[i].get().get_value();
         }
+
         switch (controller_state_)
         {
         case ControllerState::IDLE:
         {
+            // 速度をゼロに設定
+            for (auto &command_interface : command_interfaces_)
+            {
+                command_interface.set_value(0.0);
+            }
+
             if (*is_running_.readFromRT())
             {
                 // Sin波開始コマンドを受信したらHOMINGに移行
