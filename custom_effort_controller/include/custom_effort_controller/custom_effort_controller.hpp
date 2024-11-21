@@ -31,6 +31,7 @@ namespace custom_effort_controller
         enum class ControllerState
         {
             IDLE,
+            HOMING,
             RUNNING_SINE
         };
         struct JointConfig
@@ -59,7 +60,10 @@ namespace custom_effort_controller
                 };
         realtime_tools::RealtimeBuffer<bool> is_running_;
         rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr command_subscriber_;
+        rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr command_pub_;
         ControllerState controller_state_;
+        double homing_effort_; 
+        double position_tolerance_;
     };
 
 } // namespace custom_effort_controller

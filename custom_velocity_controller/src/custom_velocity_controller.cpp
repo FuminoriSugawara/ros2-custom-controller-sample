@@ -34,6 +34,9 @@ namespace custom_velocity_controller
         auto target_joints = get_node()->get_parameter("target_joints").as_string_array();
         auto amplitudes = get_node()->get_parameter("amplitudes").as_double_array();
         auto frequencies = get_node()->get_parameter("frequencies").as_double_array();
+        homing_velocity_ = get_node()->get_parameter("homing_velocity").as_double();
+        position_tolerance_ = get_node()->get_parameter("position_tolerance").as_double();
+        command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>("~/command", rclcpp::SystemDefaultsQoS());
         joint_names_ = joints;
         controller_state_ = ControllerState::IDLE;
 
@@ -164,6 +167,36 @@ namespace custom_velocity_controller
                 // Sin波開始コマンドを受信したらHOMINGに移行
                 controller_state_ = ControllerState::RUNNING_SINE;
                 RCLCPP_INFO(get_node()->get_logger(), "Starting sine wave");
+            } else {
+                // ホーミングコマンドを受信したらHOMINGに移行
+                controller_state_ = ControllerState::HOMING;
+            }
+            break;
+        }
+        case ControllerState::HOMING:
+        {
+            // ホーミング処理
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                if (joint_configs_[i].is_target)
+                {
+                    double command;
+                    if (joint_configs_[i].current_position > 0.0)
+                    {
+                        command = -homing_velocity_;
+                    }
+                    else
+                    {
+                        command = homing_velocity_;
+                    }
+                    if (std::abs(joint_configs_[i].current_position) < position_tolerance_)
+                    {
+                        command = 0.0;
+                        controller_state_ = ControllerState::IDLE;
+                    }
+
+                    command_interfaces_[i].set_value(command);
+                }
             }
             break;
         }
@@ -172,8 +205,20 @@ namespace custom_velocity_controller
             if (!(*is_running_.readFromRT()))
             {
                 // 停止コマンドを受信したら停止
-                controller_state_ = ControllerState::IDLE;
-                RCLCPP_INFO(get_node()->get_logger(), "Stopping sine wave");
+                controller_state_ = ControllerState::STOPPING_SINE;
+                // 各ジョイントの現在の速度を保存し、減速時間を設定
+                for (auto &config : joint_configs_)
+                {
+                    if (config.is_target)
+                    {
+                        config.stop_initial_command = config.amplitude * std::sin(config.phase);
+                        config.deceleration_time = deceleration_duration_;
+                        config.elapsed_stop_time = 0.0;
+                        config.phase = 0.0;
+                    }
+                }
+                
+                RCLCPP_INFO(get_node()->get_logger(), "Starting smooth deceleration");
                 break;
             }
 
@@ -191,7 +236,55 @@ namespace custom_velocity_controller
             }
             break;
         }
+        case ControllerState::STOPPING_SINE:
+        {
+            bool all_stopped = true;
+            
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                if (joint_configs_[i].is_target)
+                {
+                    // 経過時間を更新
+                    joint_configs_[i].elapsed_stop_time += period.seconds();
+                    
+                    // 線形減速の計算
+                    double progress = std::min(joint_configs_[i].elapsed_stop_time / 
+                                            joint_configs_[i].deceleration_time, 1.0);
+                    
+                    // 初期速度から線形に減速
+                    double command = joint_configs_[i].stop_initial_command * (1.0 - progress);
+
+                    RCLCPP_INFO(get_node()->get_logger(), "Progress: %f, Command: %f", progress, command);
+                    
+                    command_interfaces_[i].set_value(command);
+                    
+                    // 速度が十分小さくなったかチェック
+                    if (std::abs(command) > velocity_tolerance_)
+                    {
+                        all_stopped = false;
+                    }
+                }
+            }
+
+            if (all_stopped)
+            {
+                // すべてのジョイントの速度が十分小さくなったらホーミングへ移行
+                controller_state_ = ControllerState::HOMING;
+                RCLCPP_INFO(get_node()->get_logger(), "Transitioning to homing");
+            }
+            break;
         }
+        }
+
+        std_msgs::msg::Float64MultiArray command_msg;
+        command_msg.data.resize(command_interfaces_.size());
+        
+        for (size_t i = 0; i < command_interfaces_.size(); ++i)
+        {
+            command_msg.data[i] = command_interfaces_[i].get_value();
+        }
+        
+        command_pub_->publish(command_msg);
 
         return controller_interface::return_type::OK;
     }

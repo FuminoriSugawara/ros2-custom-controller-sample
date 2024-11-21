@@ -61,6 +61,7 @@ namespace custom_position_controller
             };
         realtime_tools::RealtimeBuffer<bool> is_running_;
         rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr command_subscriber_;
+        rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr command_pub_;
         ControllerState controller_state_;
         double homing_velocity_;    // ゼロ位置への移動速度
         double position_tolerance_; // ゼロ位置の許容誤差

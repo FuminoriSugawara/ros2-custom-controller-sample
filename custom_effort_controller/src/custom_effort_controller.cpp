@@ -34,6 +34,9 @@ namespace custom_effort_controller
         auto target_joints = get_node()->get_parameter("target_joints").as_string_array();
         auto amplitudes = get_node()->get_parameter("amplitudes").as_double_array();
         auto frequencies = get_node()->get_parameter("frequencies").as_double_array();
+        homing_effort_ = get_node()->get_parameter("homing_effort").as_double();
+        position_tolerance_ = get_node()->get_parameter("position_tolerance").as_double();
+        command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>("~/command", rclcpp::SystemDefaultsQoS());
         joint_names_ = joints;
         controller_state_ = ControllerState::IDLE;
 
@@ -161,9 +164,39 @@ namespace custom_effort_controller
 
             if (*is_running_.readFromRT())
             {
-                // Sin波開始コマンドを受信したらHOMINGに移行
+                // Sin波開始コマンドを受信したらRUNNING_SINEに移行
                 controller_state_ = ControllerState::RUNNING_SINE;
                 RCLCPP_INFO(get_node()->get_logger(), "Starting sine wave");
+            } else {
+                // ホーミングコマンドを受信したらHOMINGに移行
+                controller_state_ = ControllerState::HOMING;
+            }
+            break;
+        }
+        case ControllerState::HOMING:
+        {
+            // ホーミング処理
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                if (joint_configs_[i].is_target)
+                {
+                    double command;
+                    if (joint_configs_[i].current_position > 0.0)
+                    {
+                        command = -homing_effort_;
+                    }
+                    else
+                    {
+                        command = homing_effort_;
+                    }
+                    if (std::abs(joint_configs_[i].current_position) < position_tolerance_)
+                    {
+                        command = 0.0;
+                        controller_state_ = ControllerState::IDLE;
+                    }
+
+                    command_interfaces_[i].set_value(command);
+                }
             }
             break;
         }
@@ -192,6 +225,17 @@ namespace custom_effort_controller
             break;
         }
         }
+
+        std_msgs::msg::Float64MultiArray command_msg;
+        command_msg.data.resize(command_interfaces_.size());
+        
+        for (size_t i = 0; i < command_interfaces_.size(); ++i)
+        {
+            command_msg.data[i] = command_interfaces_[i].get_value();
+        }
+        
+        command_pub_->publish(command_msg);
+
 
         return controller_interface::return_type::OK;
     }

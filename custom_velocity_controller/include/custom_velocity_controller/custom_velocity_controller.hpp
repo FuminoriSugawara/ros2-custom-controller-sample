@@ -31,7 +31,9 @@ namespace custom_velocity_controller
         enum class ControllerState
         {
             IDLE,
-            RUNNING_SINE
+            HOMING,
+            RUNNING_SINE,
+            STOPPING_SINE
         };
         struct JointConfig
         {
@@ -43,6 +45,9 @@ namespace custom_velocity_controller
             double current_position;
             double current_velocity;
             double current_effort;
+            double stop_initial_command;  // 停止開始時の指令値
+            double deceleration_time;      // 減速に要する時間
+            double elapsed_stop_time;      // 停止開始からの経過時間
         };
         std::vector<JointConfig> joint_configs_;
         std::vector<std::string> joint_names_;
@@ -59,7 +64,12 @@ namespace custom_velocity_controller
             };
         realtime_tools::RealtimeBuffer<bool> is_running_;
         rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr command_subscriber_;
+        rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr command_pub_;
         ControllerState controller_state_;
+        double deceleration_duration_ = 0.25;  // 停止までの目標時間(秒)
+        double velocity_tolerance_ = 100.0;    // 速度がこの値以下になったらホーミングへ移行
+        double homing_velocity_;    // ゼロ位置への移動速度
+        double position_tolerance_; // ゼロ位置の許容誤差
     };
 
 } // namespace custom_velocity_controller

@@ -40,6 +40,7 @@ namespace custom_position_controller
         joint_names_ = joints;
         homing_velocity_ = get_node()->get_parameter("homing_velocity").as_double();
         position_tolerance_ = get_node()->get_parameter("position_tolerance").as_double();
+        command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>("~/command", rclcpp::SystemDefaultsQoS());
         controller_state_ = ControllerState::IDLE;
 
         // 設定のバリデーション
@@ -224,6 +225,17 @@ namespace custom_position_controller
             break;
         }
         }
+
+        std_msgs::msg::Float64MultiArray command_msg;
+        command_msg.data.resize(command_interfaces_.size());
+        
+        for (size_t i = 0; i < command_interfaces_.size(); ++i)
+        {
+            command_msg.data[i] = command_interfaces_[i].get_value();
+        }
+        
+        command_pub_->publish(command_msg);
+
 
         return controller_interface::return_type::OK;
     }
