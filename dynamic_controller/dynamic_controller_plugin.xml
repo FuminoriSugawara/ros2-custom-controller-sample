@@ -1,0 +1,9 @@
+<library path="dynamic_controller">
+    <class name="dynamic_controller/DynamicController"
+        type="dynamic_controller::DynamicController"
+        base_class_type="controller_interface::ControllerInterface">
+        <description>
+            dynamic_controller
+        </description>
+    </class>
+</library>
