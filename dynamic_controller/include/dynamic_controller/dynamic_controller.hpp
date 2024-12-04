@@ -9,6 +9,7 @@
 #include "rclcpp_lifecycle/state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/int8.hpp"
 
 namespace dynamic_controller
 {
@@ -20,9 +21,9 @@ namespace dynamic_controller
             bool enable : 1;
             bool reserved_1 : 3;
             uint8_t control_mode : 2;
-            bool reserved_2 : 2;
+            uint8_t reserved_2 : 2;
+            uint8_t control_state : 4;
             uint8_t module_id : 4;
-            bool reserved_3 : 4;
         } bits;
 
     } ControlWord;
@@ -36,9 +37,9 @@ namespace dynamic_controller
             bool error : 1;
             bool reserved_1 : 1;
             uint8_t control_mode : 2;
-            bool reserved_2 : 2;
-            bool reserved_3 : 4;
-            bool reserved_4 : 4;
+            uint8_t reserved_2 : 2;
+            uint8_t control_state : 4;
+            uint8_t reserved_3 : 4;
         } bits;
     } StatusWord;
 
@@ -61,18 +62,35 @@ namespace dynamic_controller
     private:
         enum class ControllerState
         {
-            IDLE,
-            HOMING,
-            RUNNING_SINE,
-            STOPPING_SINE
+            INITIALIZING = 0,
+            INITIAL_MODE_SETTING = 1,
+            IDLING = 2,
+            HOMING = 3,
+            CONTROLLING = 4,
+            MODE_CHANGING = 5,
+            STOPPING = 6,
+            ENABLING = 7,
+        };
+        enum class ControlMode
+        {
+            OPEN = 0,
+            EFFORT = 1,
+            VELOCITY = 2,
+            POSITION = 3,
         };
         struct JointConfig
         {
             std::string name;
-            double amplitude;
-            double frequency;
+            int module_id;
+            double position_control_amplitude;
+            double position_control_frequency;
+            double velocity_control_amplitude;
+            double velocity_control_frequency;
+            double effort_control_amplitude;
+            double effort_control_frequency;
             double phase;
             bool is_target;
+            bool is_online;
             double current_position;
             double current_velocity;
             double current_effort;
@@ -91,6 +109,10 @@ namespace dynamic_controller
         std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>> joint_velocity_state_interface_;
         std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>> joint_effort_state_interface_;
         std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>> joint_status_interface_;
+        std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface>> joint_position_command_interface_;
+        std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface>> joint_velocity_command_interface_;
+        std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface>> joint_effort_command_interface_;
+        std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface>> joint_control_word_command_interface_;
         std::unordered_map<
             std::string, std::vector<std::reference_wrapper<hardware_interface::LoanedStateInterface>> *>
             state_interface_map_ = {
@@ -99,10 +121,21 @@ namespace dynamic_controller
                 {"effort", &joint_effort_state_interface_},
                 {"status", &joint_status_interface_}
             };
+        std::unordered_map<
+            std::string, std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface>> *>
+            command_interface_map_ = {
+                {"position", &joint_position_command_interface_},
+                {"velocity", &joint_velocity_command_interface_},
+                {"effort", &joint_effort_command_interface_},
+                {"control_word", &joint_control_word_command_interface_}
+            };
         realtime_tools::RealtimeBuffer<bool> is_running_;
+        realtime_tools::RealtimeBuffer<ControllerState> controller_state_;
+        realtime_tools::RealtimeBuffer<ControlMode> control_mode_;
         rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr command_subscriber_;
+        rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr controller_state_subscriber_;
+        rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr control_mode_subscriber_;
         rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr command_pub_;
-        ControllerState controller_state_;
         double deceleration_duration_ = 0.25;  // 停止までの目標時間(秒)
         double velocity_tolerance_ = 100.0;    // 速度がこの値以下になったらホーミングへ移行
         double homing_velocity_;    // ゼロ位置への移動速度
