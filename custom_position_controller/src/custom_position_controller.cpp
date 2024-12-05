@@ -17,9 +17,10 @@ namespace custom_position_controller
             auto_declare<std::vector<std::string>>("target_joints", std::vector<std::string>());
             auto_declare<std::vector<double>>("amplitudes", std::vector<double>());
             auto_declare<std::vector<double>>("frequencies", std::vector<double>());
-            state_interface_types_ = auto_declare<std::vector<std::string>>("state_interfaces", state_interface_types_);
-            auto_declare<double>("homing_velocity", 0.1);     // ゼロ位置への移動速度
-            auto_declare<double>("position_tolerance", 0.01); // 位置許容誤差
+            auto_declare<std::vector<int>>("module_ids", std::vector<int>());
+            //state_interface_types_ = auto_declare<std::vector<std::string>>("state_interfaces", state_interface_types_);
+            //auto_declare<double>("homing_velocity", 0.1);     // ゼロ位置への移動速度
+            //auto_declare<double>("position_tolerance", 0.01); // 位置許容誤差
         }
         catch (const std::exception &e)
         {
@@ -32,36 +33,37 @@ namespace custom_position_controller
     controller_interface::CallbackReturn CustomPositionController::on_configure(
         const rclcpp_lifecycle::State &previous_state)
     {
-        // パラメータの取得
         auto joints = get_node()->get_parameter("joints").as_string_array();
         auto target_joints = get_node()->get_parameter("target_joints").as_string_array();
+        auto module_ids = get_node()->get_parameter("module_ids").as_integer_array();
         auto amplitudes = get_node()->get_parameter("amplitudes").as_double_array();
         auto frequencies = get_node()->get_parameter("frequencies").as_double_array();
-        joint_names_ = joints;
         homing_velocity_ = get_node()->get_parameter("homing_velocity").as_double();
         position_tolerance_ = get_node()->get_parameter("position_tolerance").as_double();
         command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>("~/command", rclcpp::SystemDefaultsQoS());
-        controller_state_ = ControllerState::IDLE;
+        joint_names_ = joints;
+        controller_state_.writeFromNonRT(ControllerState::STARTING);
+        control_mode_.writeFromNonRT(ControlMode::POSITION);
+        command_interface_types_ = get_node()->get_parameter("command_interfaces").as_string_array();
+        state_interface_types_ = get_node()->get_parameter("state_interfaces").as_string_array();
 
-        // 設定のバリデーション
-        if (amplitudes.size() != target_joints.size() ||
-            frequencies.size() != target_joints.size())
+        if (joint_names_.empty())
         {
-            RCLCPP_ERROR(get_node()->get_logger(),
-                         "The number of amplitudes and frequencies must match the number of target joints");
+            RCLCPP_ERROR(get_node()->get_logger(), "No joints provided");
             return controller_interface::CallbackReturn::ERROR;
         }
 
         // ジョイント設定の初期化
         joint_configs_.clear();
-        command_interface_types_.clear();
+        //command_interface_types_.clear();
 
-        // 全ジョイントの設定を作成
         for (const auto &joint : joints)
         {
             JointConfig config;
             config.name = joint;
+            config.module_id = 0;
             config.is_target = false;
+            config.is_online = false;
             config.amplitude = 0.0;
             config.frequency = 0.0;
             config.phase = 0.0;
@@ -72,13 +74,14 @@ namespace custom_position_controller
             {
                 size_t idx = std::distance(target_joints.begin(), it);
                 config.is_target = true;
+                config.module_id = module_ids[idx];
                 config.amplitude = amplitudes[idx];
                 config.frequency = frequencies[idx];
             }
 
             joint_configs_.push_back(config);
-            command_interface_types_.push_back(
-                joint + "/" + hardware_interface::HW_IF_POSITION);
+            //command_interface_types_.push_back(
+            //    joint + "/" + hardware_interface::HW_IF_POSITION);
         }
 
         // Sin波の開始/停止用サブスクライバの設定
@@ -87,6 +90,14 @@ namespace custom_position_controller
             [this](const std_msgs::msg::Bool::SharedPtr msg)
             {
                 is_running_.writeFromNonRT(msg->data);
+            });
+
+        controller_state_subscriber_ = get_node()->create_subscription<std_msgs::msg::Int8>(
+            "~/controller_state", 1,
+            [this](const std_msgs::msg::Int8::SharedPtr msg)
+            {
+                RCLCPP_INFO(get_node()->get_logger(), "controller_state: %d", msg->data);
+                controller_state_.writeFromNonRT(static_cast<ControllerState>(msg->data));
             });
 
         // 初期状態は停止
@@ -104,11 +115,31 @@ namespace custom_position_controller
         {
             for (const auto &interface_type : state_interface_types_)
             {
+                RCLCPP_INFO(get_node()->get_logger(), "state interface: %s", (joint_name + "/" + interface_type).c_str());
                 conf.names.push_back(joint_name + "/" + interface_type);
             }
         }
 
         return conf;
+    }
+
+    controller_interface::InterfaceConfiguration CustomPositionController::command_interface_configuration() const
+    {
+        controller_interface::InterfaceConfiguration command_interfaces_config;
+        command_interfaces_config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+
+        // 各ジョイントに対して指定されたすべてのcommand_interfacesを追加
+        for (const auto &joint : joint_names_)
+        {
+            for (const auto &interface : command_interface_types_)
+            {
+                RCLCPP_INFO(get_node()->get_logger(), "command interface: %s", (joint + "/" + interface).c_str());
+                command_interfaces_config.names.push_back(joint + "/" + interface);
+            }
+        }
+
+        return command_interfaces_config;
+        
     }
 
     controller_interface::CallbackReturn CustomPositionController::on_activate(const rclcpp_lifecycle::State &)
@@ -117,12 +148,18 @@ namespace custom_position_controller
         joint_position_state_interface_.clear();
         joint_velocity_state_interface_.clear();
         joint_effort_state_interface_.clear();
+        joint_status_interface_.clear();
 
         // assign state interfaces
-        for (auto &interface : state_interfaces_)
+        for (auto &state_interface : state_interfaces_)
         {
-            RCLCPP_INFO(get_node()->get_logger(), "Interface: %s", interface.get_interface_name().c_str());
-            state_interface_map_[interface.get_interface_name()]->push_back(interface);
+            state_interface_map_[state_interface.get_interface_name()]->push_back(state_interface);
+        }
+
+        // assign command interfaces
+        for (auto &command_interface : command_interfaces_)
+        {
+            command_interface_map_[command_interface.get_interface_name()]->push_back(command_interface);
         }
 
         return CallbackReturn::SUCCESS;
@@ -138,104 +175,316 @@ namespace custom_position_controller
     controller_interface::return_type CustomPositionController::update(
         const rclcpp::Time &time, const rclcpp::Duration &period)
     {
-        for (size_t i = 0; i < joint_configs_.size(); ++i) {
+
+        ControllerState controller_state = *controller_state_.readFromRT();
+
+        for (size_t i = 0; i < joint_configs_.size(); ++i)
+        {
             joint_configs_[i].current_position = joint_position_state_interface_[i].get().get_value();
             joint_configs_[i].current_velocity = joint_velocity_state_interface_[i].get().get_value();
             joint_configs_[i].current_effort = joint_effort_state_interface_[i].get().get_value();
+            joint_configs_[i].current_status.word = joint_status_interface_[i].get().get_value();
         }
 
-        // コントローラの状態に応じた処理
-        switch (controller_state_)
+        switch (controller_state)
         {
-        case ControllerState::IDLE:
+        case ControllerState::STARTING:
         {
-            if (*is_running_.readFromRT())
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
             {
-                // Sin波開始コマンドを受信したらHOMINGに移行
-                controller_state_ = ControllerState::HOMING;
-                RCLCPP_INFO(get_node()->get_logger(), "Starting homing sequence");
+                JointConfig &config = joint_configs_[i];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(ControlMode::EFFORT);
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::STARTING);
+                control_word.bits.module_id = config.module_id;
+                joint_control_word_command_interface_[i].get().set_value(control_word.word);
+            }
+            controller_state_.writeFromNonRT(ControllerState::INITIALIZING);
+            break;
+        }
+        case ControllerState::INITIALIZING:
+        {
+            // 初回実行時の初期化
+            if (online_sent_.empty())
+            {
+                online_sent_.resize(joint_configs_.size(), false);
+                last_online_sent_time_ = time;
+            }
+
+            if (!online_sent_[current_joint_index_] && (time - last_online_sent_time_).seconds() >= 0.5)
+            {
+
+                JointConfig &config = joint_configs_[current_joint_index_];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(ControlMode::POSITION);
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::INITIALIZING);
+                control_word.bits.module_id = config.module_id;
+
+                joint_control_word_command_interface_[current_joint_index_].get().set_value(control_word.word);
+
+                RCLCPP_INFO(get_node()->get_logger(), "Sending Online to joint %zu", current_joint_index_);
+
+                online_sent_[current_joint_index_] = true;
+                last_online_sent_time_ = time;
+                current_joint_index_++;
+            }
+
+            if (current_joint_index_ >= joint_configs_.size())
+            {
+                online_sent_.clear();
+                current_joint_index_ = 0;
+                controller_state_.writeFromNonRT(ControllerState::CONNECTION_WAITING);
+                last_online_check_time_ = time;
+            } else {
+                controller_state_.writeFromNonRT(ControllerState::STARTING);
             }
             break;
         }
+        case ControllerState::CONNECTION_WAITING:
+        {
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                JointConfig &config = joint_configs_[i];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(static_cast<uint8_t>(ControlMode::POSITION));
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::CONNECTION_WAITING);
+                control_word.bits.module_id = config.module_id;
+                joint_control_word_command_interface_[i].get().set_value(control_word.word);
+            }
+            
+            // 1秒経過したかチェック
+            if ((time - last_online_check_time_).seconds() >= 1.0)
+            {
+                RCLCPP_INFO(get_node()->get_logger(), "Checking connection...");
 
+                // 接続確認
+                bool all_joints_connected = true;
+                for (size_t i = 0; i < joint_configs_.size(); ++i)
+                {
+                    if (joint_configs_[i].is_target &&
+                        !joint_configs_[i].current_status.bits.enable)
+                    {
+                        all_joints_connected = false;
+                        break;
+                    }
+                }
+
+                if (all_joints_connected)
+                {
+                    // 接続成功
+                    RCLCPP_INFO(get_node()->get_logger(), "All joints connected successfully");
+                    online_check_retry_count_ = 0;
+                    controller_state_.writeFromNonRT(ControllerState::INITIAL_MODE_SETTING);
+                }
+                else
+                {
+                    // 接続失敗
+                    online_check_retry_count_++;
+                    if (online_check_retry_count_ >= online_check_max_retry_)
+                    {
+                        RCLCPP_WARN(get_node()->get_logger(),
+                                    "Connection failed after %d attempts, reinitializing...", online_check_max_retry_);
+                        online_check_retry_count_ = 0;
+                        controller_state_.writeFromNonRT(ControllerState::STARTING);
+                    }
+                }
+
+                last_online_check_time_ = time;
+            }
+            break;
+        }
+        case ControllerState::INITIAL_MODE_SETTING:
+        {
+            control_mode_.writeFromNonRT(ControlMode::POSITION);
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                JointConfig &config = joint_configs_[i];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(static_cast<uint8_t>(ControlMode::POSITION));
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::INITIAL_MODE_SETTING);
+                control_word.bits.module_id = config.module_id;
+                joint_control_word_command_interface_[i].get().set_value(control_word.word);
+            }
+            // control mode が POSITION になったかチェック
+            bool all_joints_in_position_control_mode = true;
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                if (joint_configs_[i].is_target &&
+                    joint_configs_[i].current_status.bits.control_mode != static_cast<uint8_t>(ControlMode::POSITION))
+                {
+                    all_joints_in_position_control_mode = false;
+                    break;
+                }
+            }
+
+            // すべてのジョイントが位置制御モードになったら IDLING に移行
+            if (all_joints_in_position_control_mode)
+            {
+                controller_state_.writeFromNonRT(ControllerState::IDLING);
+                RCLCPP_INFO(get_node()->get_logger(), "IDLING");
+            }
+            break;
+        }
+        case ControllerState::IDLING:
+        {
+            ControlMode control_mode = *control_mode_.readFromRT();
+            // ControlWord を送信する
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                JointConfig &config = joint_configs_[i];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(control_mode);
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::IDLING);
+                control_word.bits.module_id = config.module_id;
+                joint_control_word_command_interface_[i].get().set_value(control_word.word);
+            }
+            // なにもしない
+            break;
+        }
         case ControllerState::HOMING:
         {
+            RCLCPP_INFO(get_node()->get_logger(), "HOMING");
+            control_mode_.writeFromNonRT(ControlMode::POSITION);
+            // ホーミング処理
             bool all_joints_homed = true;
-
-            // 各ジョイントをゼロ位置に移動
+            ControlMode control_mode = *control_mode_.readFromRT();
             for (size_t i = 0; i < joint_configs_.size(); ++i)
             {
-                if (!joint_configs_[i].is_target)
-                {
-                    continue;
-                }
+                JointConfig &config = joint_configs_[i];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(control_mode);
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::HOMING);
+                control_word.bits.module_id = config.module_id;
+                joint_control_word_command_interface_[i].get().set_value(control_word.word);
 
-                double current_pos = joint_configs_[i].current_position;
-                if (std::abs(current_pos) > position_tolerance_)
+                if (config.current_status.bits.enable)
                 {
+                    double current_position = config.current_position;
                     double command = 0.0;
-                    if (current_pos > 0) {
-                        command = std::max(0.0, current_pos - homing_velocity_);
-                    } else {
-                        command = std::min(0.0, current_pos + homing_velocity_);
+                    if (std::abs(current_position) > position_tolerance_)
+                    {
+                        if (current_position > 0.0)
+                        {
+                            command = std::max(0.0, current_position - homing_velocity_);
+                        }
+                        else
+                        {
+                            command = std::min(0.0, current_position + homing_velocity_);
+                        }
+                        all_joints_homed = false;
                     }
-
-                    command_interfaces_[i].set_value(command);
-                    all_joints_homed = false;
+                    joint_position_command_interface_[i].get().set_value(command);
                 }
             }
-
-
-            // すべてのジョイントがゼロ位置に到達したらSin波出力開始
+            // すべてのジョイントがホーミング完了したら IDLING に移行
             if (all_joints_homed)
             {
-                controller_state_ = ControllerState::RUNNING_SINE;
-                // 位相をリセット
-                for (auto &config : joint_configs_)
-                {
-                    config.phase = 0.0;
-                }
-                RCLCPP_INFO(get_node()->get_logger(), "Homing complete, starting sine wave");
+                controller_state_.writeFromNonRT(ControllerState::IDLING);
+                RCLCPP_INFO(get_node()->get_logger(), "IDLING");
             }
             break;
         }
-
-        case ControllerState::RUNNING_SINE:
+        case ControllerState::CONTROLLING:
         {
-            if (!(*is_running_.readFromRT()))
-            {
-                // 停止コマンドを受信したら停止
-                controller_state_ = ControllerState::IDLE;
-                RCLCPP_INFO(get_node()->get_logger(), "Stopping sine wave");
-                break;
-            }
-
-            // Sin波の生成と出力
+            RCLCPP_INFO(get_node()->get_logger(), "CONTROLLING");
+            // ここでSin波の処理
+            ControlMode control_mode = *control_mode_.readFromRT();
             for (size_t i = 0; i < joint_configs_.size(); ++i)
             {
-                if (joint_configs_[i].is_target)
+                JointConfig &config = joint_configs_[i];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(control_mode);
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::CONTROLLING);
+                control_word.bits.module_id = config.module_id;
+                joint_control_word_command_interface_[i].get().set_value(control_word.word);
+                if (config.is_target)
                 {
-                    joint_configs_[i].phase +=
-                        2.0 * M_PI * joint_configs_[i].frequency * period.seconds();
+                    config.phase +=
+                        2.0 * M_PI * config.frequency * period.seconds();
                     double command =
-                        joint_configs_[i].amplitude * std::sin(joint_configs_[i].phase);
-                    command_interfaces_[i].set_value(command);
+                        config.amplitude * std::sin(config.phase);
+                    joint_position_command_interface_[i].get().set_value(command);
                 }
             }
+
+            break;
+
+        }
+        case ControllerState::MODE_CHANGING:
+            break;
+        case ControllerState::STOPPING:
+        {
+            RCLCPP_INFO(get_node()->get_logger(), "STOPPING");
+            // 停止処理
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                joint_configs_[i].phase = 0.0;
+            }
+
+            break;
+        }
+        case ControllerState::ENABLING:
+        {
+            // 有効化処理
+            ControlMode control_mode = *control_mode_.readFromRT();
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                JointConfig &config = joint_configs_[i];
+                ControlWord control_word;
+                control_word.word = 0;
+                control_word.bits.enable = config.is_target;
+                control_word.bits.control_mode = static_cast<uint8_t>(control_mode);
+                control_word.bits.control_state = static_cast<uint8_t>(ControllerState::ENABLING);
+                control_word.bits.module_id = config.module_id;
+                joint_control_word_command_interface_[i].get().set_value(control_word.word);
+            }
+            // IDLING に移行
+            controller_state_.writeFromNonRT(ControllerState::IDLING);
+            RCLCPP_INFO(get_node()->get_logger(), "IDLING");
             break;
         }
         }
 
         std_msgs::msg::Float64MultiArray command_msg;
         command_msg.data.resize(command_interfaces_.size());
-        
+
         for (size_t i = 0; i < command_interfaces_.size(); ++i)
         {
             command_msg.data[i] = command_interfaces_[i].get_value();
         }
-        
+
         command_pub_->publish(command_msg);
 
+        // 1秒ごとにログを出力
+
+        //if (time.seconds() - last_log_time_.seconds() > 1.0)
+        //{
+        //    last_log_time_ = time;
+        //    for (size_t i = 0; i < joint_configs_.size(); ++i)
+        //    {
+        //        RCLCPP_INFO(get_node()->get_logger(), "Joint %s: Module Id 0x%02X, Position: %f, Velocity: %f, Effort: %f, Status: 0x%04x",
+        //                    joint_configs_[i].name.c_str(),
+        //                    joint_configs_[i].module_id,
+        //                    joint_configs_[i].current_position,
+        //                    joint_configs_[i].current_velocity,
+        //                    joint_configs_[i].current_effort,
+        //                    static_cast<uint16_t>(joint_configs_[i].current_status.word));
+        //    }
+        //}
 
         return controller_interface::return_type::OK;
     }

@@ -43,6 +43,49 @@ namespace dynamic_controller
         } bits;
     } StatusWord;
 
+    enum class ControllerState
+    {
+        STARTING = 0,
+        INITIALIZING = 1,
+        CONNECTION_WAITING = 2,
+        INITIAL_MODE_SETTING = 3,
+        IDLING = 4,
+        HOMING = 5,
+        CONTROLLING = 6,
+        MODE_CHANGING = 7,
+        STOPPING = 8,
+        ENABLING = 9,
+    };
+
+    enum class ControlMode
+    {
+        OPEN = 0,
+        EFFORT = 1,
+        VELOCITY = 2,
+        POSITION = 3,
+    };
+
+    struct JointConfig
+    {
+        std::string name;
+        int module_id;
+        double position_control_amplitude;
+        double position_control_frequency;
+        double velocity_control_amplitude;
+        double velocity_control_frequency;
+        double effort_control_amplitude;
+        double effort_control_frequency;
+        double phase;
+        bool is_target;
+        bool is_online;
+        double current_position;
+        double current_velocity;
+        double current_effort;
+        StatusWord current_status;
+        double stop_initial_command; // 停止開始時の指令値
+        double deceleration_time;    // 減速に要する時間
+        double elapsed_stop_time;    // 停止開始からの経過時間
+    };
 
     class DynamicController : public forward_command_controller::MultiInterfaceForwardCommandController
     {
@@ -60,45 +103,6 @@ namespace dynamic_controller
         controller_interface::return_type update(const rclcpp::Time &time, const rclcpp::Duration &period) override;
 
     private:
-        enum class ControllerState
-        {
-            INITIALIZING = 0,
-            INITIAL_MODE_SETTING = 1,
-            IDLING = 2,
-            HOMING = 3,
-            CONTROLLING = 4,
-            MODE_CHANGING = 5,
-            STOPPING = 6,
-            ENABLING = 7,
-        };
-        enum class ControlMode
-        {
-            OPEN = 0,
-            EFFORT = 1,
-            VELOCITY = 2,
-            POSITION = 3,
-        };
-        struct JointConfig
-        {
-            std::string name;
-            int module_id;
-            double position_control_amplitude;
-            double position_control_frequency;
-            double velocity_control_amplitude;
-            double velocity_control_frequency;
-            double effort_control_amplitude;
-            double effort_control_frequency;
-            double phase;
-            bool is_target;
-            bool is_online;
-            double current_position;
-            double current_velocity;
-            double current_effort;
-            StatusWord current_status;
-            double stop_initial_command;  // 停止開始時の指令値
-            double deceleration_time;      // 減速に要する時間
-            double elapsed_stop_time;      // 停止開始からの経過時間
-        };
         std::vector<JointConfig> joint_configs_;
         std::vector<std::string> joint_names_;
         std::vector<std::string> state_interface_types_;
@@ -136,12 +140,15 @@ namespace dynamic_controller
         rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr controller_state_subscriber_;
         rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr control_mode_subscriber_;
         rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr command_pub_;
-        double deceleration_duration_ = 0.25;  // 停止までの目標時間(秒)
-        double velocity_tolerance_ = 100.0;    // 速度がこの値以下になったらホーミングへ移行
         double homing_velocity_;    // ゼロ位置への移動速度
         double position_tolerance_; // ゼロ位置の許容誤差
-        // last_log_time_ は、前回ログを出力した時間を保持する
-        rclcpp::Time last_log_time_;
+        rclcpp::Time last_log_time_; // 前回ログを出力した時間を保持
+        size_t current_joint_index_ = 0;
+        std::vector<bool> online_sent_;
+        rclcpp::Time last_online_sent_time_;
+        rclcpp::Time last_online_check_time_;
+        int online_check_retry_count_ = 0;
+        int online_check_max_retry_ = 2; // 最大リトライ回数
     };
 
 } // namespace dynamic_controller
