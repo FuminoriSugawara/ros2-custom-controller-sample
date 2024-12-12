@@ -6,8 +6,14 @@
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 
+#include "custom_effort_controller/kkwTABC.h"
+
+
 namespace custom_effort_controller
 {
+
+
+	kkwTABC tabc[7];
 
     controller_interface::CallbackReturn CustomEffortController::on_init()
     {
@@ -92,6 +98,7 @@ namespace custom_effort_controller
 
         // 初期状態は停止
         is_running_.writeFromNonRT(false);
+		for(int i=0;i<7;i++) tabc[i].reset(); //KIKUUWE
 
         return controller_interface::CallbackReturn::SUCCESS;
     }
@@ -167,9 +174,9 @@ namespace custom_effort_controller
                 // Sin波開始コマンドを受信したらRUNNING_SINEに移行
                 controller_state_ = ControllerState::RUNNING_SINE;
                 RCLCPP_INFO(get_node()->get_logger(), "Starting sine wave");
-            } else {
+            //} else {
                 // ホーミングコマンドを受信したらHOMINGに移行
-                controller_state_ = ControllerState::HOMING;
+                // controller_state_ = ControllerState::HOMING;
             }
             break;
         }
@@ -209,7 +216,7 @@ namespace custom_effort_controller
                 RCLCPP_INFO(get_node()->get_logger(), "Stopping sine wave");
                 break;
             }
-
+#if 0
             // Sin波の生成と出力
             for (size_t i = 0; i < joint_configs_.size(); ++i)
             {
@@ -222,6 +229,92 @@ namespace custom_effort_controller
                     command_interfaces_[i].set_value(command);
                 }
             }
+#else
+			//KIKUUWE
+            {
+                static int CNTR=0;
+                if(CNTR==0) for(int i=0;i<7;i++) tabc[i].first_use = 1;
+                CNTR =1;
+            }
+            static int cntr = 0; cntr++;
+            double t = 0.002 * cntr;
+			for(int i=0;i<7;i++) tabc[i].T  = 0.002;   // sampling interval in s.  
+			for(int i=0;i<7;i++) tabc[i].M  = 0;       // for inertial compensation, in kg.m^2. Can be zero.
+			for(int i=0;i<7;i++) tabc[i].secB = 1;  // safer to set it to be 1. Kikuuwe's 2018 TRO paper, "Modification B"         
+			for(int i=0;i<7;i++) tabc[i].secC = 0;  // Kikuuwe's 2018 TRO paper, "Modification C". Not effective when M=0. 
+			// K  : Proportional gain in Nm/rad. Must not be zero.
+			// B  : Derivative gain in Nms/rad. Must not be zero.
+			// L  : Integral gain in Nm/rad/s. Can be small but should not be zero.
+			// F  : torque limit in Nm
+			// MV : inertia in kg.m^2. Must not be zero.
+			// BV : viscosity in Nms/rad. Must not be zero.
+			// KV : stiffness in Nm/rad. Can be zero.
+			// FV : friction in Nm. Can be zero.
+            // 0-1: WHJ-60
+            // 2-3: WHJ-30
+            // 4-6: WHJ-10  <= could not be tuned enough.
+            
+			tabc[0].K = 400 ; tabc[1].K = 400 ; tabc[2].K = 400 ; tabc[3].K = 400 ; tabc[4].K = 100 ; tabc[5].K = 100 ; tabc[6].K = 100 ;
+			tabc[0].B = 8   ; tabc[1].B = 8   ; tabc[2].B = 8   ; tabc[3].B = 8   ; tabc[4].B = 2   ; tabc[5].B = 2   ; tabc[6].B = 2   ;
+			tabc[0].L = 0.01; tabc[1].L = 0.01; tabc[2].L = 0.01; tabc[3].L = 0.01; tabc[4].L = 0.01; tabc[5].L = 0.01; tabc[6].L = 0.01;
+			tabc[0].F = 2   ; tabc[1].F = 4   ; tabc[2].F = 2   ; tabc[3].F = 2   ; tabc[4].F = 1   ; tabc[5].F = 1   ; tabc[6].F = 1   ;
+			tabc[0].MV= 0.1 ; tabc[1].MV= 0.1 ; tabc[2].MV= 0.1 ; tabc[3].MV= 0.1 ; tabc[4].MV= 0.1 ; tabc[5].MV= 0.1 ; tabc[6].MV= 0.1 ;
+			tabc[0].BV= 2   ; tabc[1].BV= 2   ; tabc[2].BV= 2   ; tabc[3].BV= 2   ; tabc[4].BV= 2   ; tabc[5].BV= 2   ; tabc[6].BV= 2   ;
+			tabc[0].KV= 5.  ; tabc[1].KV= 5.  ; tabc[2].KV= 5   ; tabc[3].KV= 5   ; tabc[4].KV= 5   ; tabc[5].KV= 5   ; tabc[6].KV= 5   ;
+			tabc[0].FV= 0   ; tabc[1].FV= 0   ; tabc[2].FV= 0   ; tabc[3].FV= 0   ; tabc[4].FV= 0   ; tabc[5].FV= 0   ; tabc[6].FV= 0   ;
+
+            const double mA2Nm[7]= {0.002,0.002,0.001,0.001,0.001,0.001,0.001} ; // TEMPORARY 
+            const double tauSDZ[7]= {0.5,0.5,0.5,0.5,0.5,0.5,0.5} ; // TEMPORARY 
+
+            double tauD[7];
+            double tauS[7];
+            double angD[7];
+            double angS[7];
+            angD[0] = (M_PI/180.)*(  0.+  0.*sin(2.*M_PI*t/5));
+            angD[1] = (M_PI/180.)*(  0.+  0.*sin(2.*M_PI*t/10));
+            angD[2] = (M_PI/180.)*(  0.+ 20.*sin(2.*M_PI*t/3));
+            angD[3] = (M_PI/180.)*(  0.+ 20.*sin(2.*M_PI*t/7));
+            angD[4] = (M_PI/180.)*(  0.+  0.*sin(2.*M_PI*t/4));
+            angD[5] = (M_PI/180.)*(  0.+  0.*sin(2.*M_PI*t/5));
+            angD[6] = (M_PI/180.)*(  0.+  0.*sin(2.*M_PI*t/5));
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                if (joint_configs_[i].is_target)
+                {
+                    tauD[i] = 0;
+                    tauS[i] = kkwTABC::dzn( tauSDZ[i] ,  - mA2Nm[i] * joint_configs_[i].current_effort  ) ;
+                    angS[i] = ((M_PI/180.)*0.0001)* joint_configs_[i].current_position;
+                    if(i==0) tauS[i]=0 ;
+                    if(i==1) tauS[i]=0 ;
+                    if(i==2) tauS[i]=0 ;
+                    if(i==3) tauS[i]=0 ;
+                    if(i==4) tauS[i]=0 ;
+                    if(i==5) tauS[i]=0 ;
+                    if(i==6) tauS[i]=0 ;
+                }
+            }
+
+            double tauMG[7];
+            for(int i=0;i<7;i++) tauMG[i]=0;
+            tauMG[1] = -2.* sin(angS[1]);      // rough gravity compensation
+            tauMG[3] = -1.* sin(angS[1]+angS[3]);  // rough gravity compensation
+            tauMG[5] = -0.5* sin(angS[1]+angS[3]+angS[5]); // rough gravity compensation
+            double tauM[7];
+            double angX[7];
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                if (joint_configs_[i].is_target)
+                {
+                    angX[i] = 0;
+                    //if(i==2) RCLCPP_INFO(get_node()->get_logger(),"%d : qs1: %f ,  angS: %f", tabc[i].first_use, tabc[i].qs1, angS);
+    				tauM[i] = tabc[i].work(tauD[i], angD[i], tauS[i], angS[i], &angX[i]);
+                    tauM[i] += tauMG[i];
+    				//if(i==5) tauM[i]=0;
+    				if(i==6) tauM[i]=0;
+                    command_interfaces_[i].set_value(tauM[i]/mA2Nm[i]);
+                }
+            }
+#endif
             break;
         }
         }
