@@ -92,6 +92,8 @@ namespace custom_position_controller
         // 初期状態は停止
         is_running_.writeFromNonRT(false);
 
+        last_log_time_ = get_node()->get_clock()->now();
+
         return controller_interface::CallbackReturn::SUCCESS;
     }
 
@@ -142,6 +144,25 @@ namespace custom_position_controller
             joint_configs_[i].current_position = joint_position_state_interface_[i].get().get_value();
             joint_configs_[i].current_velocity = joint_velocity_state_interface_[i].get().get_value();
             joint_configs_[i].current_effort = joint_effort_state_interface_[i].get().get_value();
+            joint_configs_[i].encoder_diff = joint_encoder_diff_state_interface_[i].get().get_value();
+        }
+
+        // 1秒ごとにジョイントの状態を表示
+        if (time - last_log_time_ >= rclcpp::Duration(1, 0))
+        {
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
+            {
+                double diff = joint_configs_[i].encoder_diff;
+                double torque = torque_coefficients.at(joint_configs_[i].name).a1 * diff +
+                                torque_coefficients.at(joint_configs_[i].name).a2 * pow(diff, 2) +
+                                torque_coefficients.at(joint_configs_[i].name).a3 * pow(diff, 3);
+                RCLCPP_INFO(get_node()->get_logger(), "Joint: %s, Position: %f, Velocity: %f, Effort: %f, Diff: %f, Torque: %f",
+                            joint_configs_[i].name.c_str(), joint_configs_[i].current_position,
+                            joint_configs_[i].current_velocity, joint_configs_[i].current_effort,
+                            diff,
+                            torque);
+            }
+            last_log_time_ = time;
         }
 
         // コントローラの状態に応じた処理
