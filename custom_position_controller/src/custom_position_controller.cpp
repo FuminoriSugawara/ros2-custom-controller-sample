@@ -6,6 +6,8 @@
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 
+using ros2_custom_controller_sample::torque_coefficients;
+
 namespace custom_position_controller
 {
 
@@ -17,7 +19,6 @@ namespace custom_position_controller
             auto_declare<std::vector<std::string>>("target_joints", std::vector<std::string>());
             auto_declare<std::vector<double>>("amplitudes", std::vector<double>());
             auto_declare<std::vector<double>>("frequencies", std::vector<double>());
-            state_interface_types_ = auto_declare<std::vector<std::string>>("state_interfaces", state_interface_types_);
             auto_declare<double>("homing_velocity", 0.1);     // ゼロ位置への移動速度
             auto_declare<double>("position_tolerance", 0.01); // 位置許容誤差
         }
@@ -40,6 +41,8 @@ namespace custom_position_controller
         joint_names_ = joints;
         homing_velocity_ = get_node()->get_parameter("homing_velocity").as_double();
         position_tolerance_ = get_node()->get_parameter("position_tolerance").as_double();
+        command_interface_types_ = get_node()->get_parameter("command_interfaces").as_string_array();
+        state_interface_types_ = get_node()->get_parameter("state_interfaces").as_string_array();
         command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>("~/command", rclcpp::SystemDefaultsQoS());
         controller_state_ = ControllerState::IDLE;
 
@@ -54,7 +57,6 @@ namespace custom_position_controller
 
         // ジョイント設定の初期化
         joint_configs_.clear();
-        command_interface_types_.clear();
 
         // 全ジョイントの設定を作成
         for (const auto &joint : joints)
@@ -77,8 +79,6 @@ namespace custom_position_controller
             }
 
             joint_configs_.push_back(config);
-            command_interface_types_.push_back(
-                joint + "/" + hardware_interface::HW_IF_POSITION);
         }
 
         // Sin波の開始/停止用サブスクライバの設定
@@ -93,6 +93,7 @@ namespace custom_position_controller
         is_running_.writeFromNonRT(false);
 
         last_log_time_ = get_node()->get_clock()->now();
+        RCLCPP_INFO(get_node()->get_logger(), "CustomPositionController configured");
 
         return controller_interface::CallbackReturn::SUCCESS;
     }
@@ -113,18 +114,43 @@ namespace custom_position_controller
         return conf;
     }
 
+    controller_interface::InterfaceConfiguration CustomPositionController::command_interface_configuration() const
+    {
+        controller_interface::InterfaceConfiguration command_interfaces_config;
+        command_interfaces_config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+
+        // 各ジョイントに対して指定されたすべてのcommand_interfacesを追加
+        for (const auto &joint : joint_names_)
+        {
+            for (const auto &interface : command_interface_types_)
+            {
+                RCLCPP_INFO(get_node()->get_logger(), "command interface: %s", (joint + "/" + interface).c_str());
+                command_interfaces_config.names.push_back(joint + "/" + interface);
+            }
+        }
+
+        return command_interfaces_config;
+        
+    }
+
     controller_interface::CallbackReturn CustomPositionController::on_activate(const rclcpp_lifecycle::State &)
     {
         // clear out vectors in case of restart
         joint_position_state_interface_.clear();
         joint_velocity_state_interface_.clear();
         joint_effort_state_interface_.clear();
+        joint_encoder_diff_state_interface_.clear();
 
         // assign state interfaces
-        for (auto &interface : state_interfaces_)
+        for (auto &state_interface : state_interfaces_)
         {
-            RCLCPP_INFO(get_node()->get_logger(), "Interface: %s", interface.get_interface_name().c_str());
-            state_interface_map_[interface.get_interface_name()]->push_back(interface);
+            state_interface_map_[state_interface.get_interface_name()]->push_back(state_interface);
+        }
+
+        // assign command interfaces
+        for (auto &command_interface : command_interfaces_)
+        {
+            command_interface_map_[command_interface.get_interface_name()]->push_back(command_interface);
         }
 
         return CallbackReturn::SUCCESS;
@@ -132,7 +158,12 @@ namespace custom_position_controller
 
     controller_interface::CallbackReturn CustomPositionController::on_deactivate(const rclcpp_lifecycle::State &)
     {
-        release_interfaces();
+        //release_interfaces();
+        for (size_t i = 0; i < joint_configs_.size(); ++i)
+        {
+            auto current_command = command_interfaces_[i].get_value();
+            command_interfaces_[i].set_value(current_command);
+        }
 
         return CallbackReturn::SUCCESS;
     }
@@ -175,6 +206,16 @@ namespace custom_position_controller
                 // Sin波開始コマンドを受信したらHOMINGに移行
                 controller_state_ = ControllerState::HOMING;
                 RCLCPP_INFO(get_node()->get_logger(), "Starting homing sequence");
+            } else {
+                for (size_t i = 0; i < joint_configs_.size(); ++i)
+                {
+                    // 現在位置を指令値に設定
+                    joint_position_command_interface_[i].get().set_value(joint_configs_[i].current_position);
+                    // ControlWordを設定
+                    bool online = static_cast<int>(joint_configs_[i].current_position) != 0;
+                    uint16_t control_word = online ? 1 : 0;
+                    joint_control_word_command_interface_[i].get().set_value(control_word);
+                }
             }
             break;
         }
@@ -201,7 +242,7 @@ namespace custom_position_controller
                         command = std::min(0.0, current_pos + homing_velocity_);
                     }
 
-                    command_interfaces_[i].set_value(command);
+                    joint_position_command_interface_[i].get().set_value(command);
                     all_joints_homed = false;
                 }
             }
@@ -240,7 +281,7 @@ namespace custom_position_controller
                         2.0 * M_PI * joint_configs_[i].frequency * period.seconds();
                     double command =
                         joint_configs_[i].amplitude * std::sin(joint_configs_[i].phase);
-                    command_interfaces_[i].set_value(command);
+                    joint_position_command_interface_[i].get().set_value(command);
                 }
             }
             break;

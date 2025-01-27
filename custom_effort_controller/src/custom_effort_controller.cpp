@@ -6,6 +6,8 @@
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 
+using ros2_custom_controller_sample::torque_coefficients;
+
 namespace custom_effort_controller
 {
 
@@ -17,7 +19,6 @@ namespace custom_effort_controller
             auto_declare<std::vector<std::string>>("target_joints", std::vector<std::string>());
             auto_declare<std::vector<double>>("amplitudes", std::vector<double>());
             auto_declare<std::vector<double>>("frequencies", std::vector<double>());
-            state_interface_types_ = auto_declare<std::vector<std::string>>("state_interfaces", state_interface_types_);
         }
         catch (const std::exception &e)
         {
@@ -36,6 +37,8 @@ namespace custom_effort_controller
         auto frequencies = get_node()->get_parameter("frequencies").as_double_array();
         homing_effort_ = get_node()->get_parameter("homing_effort").as_double();
         position_tolerance_ = get_node()->get_parameter("position_tolerance").as_double();
+        command_interface_types_ = get_node()->get_parameter("command_interfaces").as_string_array();
+        state_interface_types_ = get_node()->get_parameter("state_interfaces").as_string_array();
         command_pub_ = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>("~/command", rclcpp::SystemDefaultsQoS());
         joint_names_ = joints;
         controller_state_ = ControllerState::IDLE;
@@ -56,7 +59,6 @@ namespace custom_effort_controller
 
         // ジョイント設定の初期化
         joint_configs_.clear();
-        command_interface_types_.clear();
 
         for (const auto &joint : joints)
         {
@@ -78,8 +80,6 @@ namespace custom_effort_controller
             }
 
             joint_configs_.push_back(config);
-            command_interface_types_.push_back(
-                joint + "/" + hardware_interface::HW_IF_EFFORT);
         }
 
         // Sin波の開始/停止用サブスクライバの設定
@@ -114,18 +114,43 @@ namespace custom_effort_controller
         return conf;
     }
 
+    controller_interface::InterfaceConfiguration CustomEffortController::command_interface_configuration() const
+    {
+        controller_interface::InterfaceConfiguration command_interfaces_config;
+        command_interfaces_config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+
+        // 各ジョイントに対して指定されたすべてのcommand_interfacesを追加
+        for (const auto &joint : joint_names_)
+        {
+            for (const auto &interface : command_interface_types_)
+            {
+                RCLCPP_INFO(get_node()->get_logger(), "command interface: %s", (joint + "/" + interface).c_str());
+                command_interfaces_config.names.push_back(joint + "/" + interface);
+            }
+        }
+
+        return command_interfaces_config;
+        
+    }
+
     controller_interface::CallbackReturn CustomEffortController::on_activate(const rclcpp_lifecycle::State &)
     {
         // clear out vectors in case of restart
         joint_position_state_interface_.clear();
         joint_velocity_state_interface_.clear();
         joint_effort_state_interface_.clear();
+        joint_encoder_diff_state_interface_.clear();
 
         // assign state interfaces
-        for (auto &interface : state_interfaces_)
+        for (auto &state_interface : state_interfaces_)
         {
-            RCLCPP_INFO(get_node()->get_logger(), "Interface: %s", interface.get_interface_name().c_str());
-            state_interface_map_[interface.get_interface_name()]->push_back(interface);
+            state_interface_map_[state_interface.get_interface_name()]->push_back(state_interface);
+        }
+
+        // assign command interfaces
+        for (auto &command_interface : command_interfaces_)
+        {
+            command_interface_map_[command_interface.get_interface_name()]->push_back(command_interface);
         }
 
         return CallbackReturn::SUCCESS;
@@ -133,12 +158,11 @@ namespace custom_effort_controller
 
     controller_interface::CallbackReturn CustomEffortController::on_deactivate(const rclcpp_lifecycle::State &)
     {
-        // Set effort to zero
-        for (auto &command_interface : command_interfaces_)
+         // Set effort to zero
+        for (size_t i = 0; i < joint_configs_.size(); ++i)
         {
-            command_interface.set_value(0.0);
+            joint_effort_command_interface_[i].get().set_value(0.0);
         }
-
         release_interfaces();
 
         return CallbackReturn::SUCCESS;
@@ -177,19 +201,20 @@ namespace custom_effort_controller
         case ControllerState::IDLE:
         {
             // Effortをゼロに設定
-            for (auto &command_interface : command_interfaces_)
+            for (size_t i = 0; i < joint_configs_.size(); ++i)
             {
-                command_interface.set_value(0.0);
+                joint_effort_command_interface_[i].get().set_value(0.0);
+                // ControlWordを設定
+                bool online = static_cast<int>(joint_configs_[i].current_position) != 0;
+                uint16_t control_word = online ? 1 : 0;
+                joint_control_word_command_interface_[i].get().set_value(control_word);
             }
 
             if (*is_running_.readFromRT())
             {
-                // Sin波開始コマンドを受信したらRUNNING_SINEに移行
-                controller_state_ = ControllerState::RUNNING_SINE;
-                RCLCPP_INFO(get_node()->get_logger(), "Starting sine wave");
-            } else {
-                // ホーミングコマンドを受信したらHOMINGに移行
+                // Sin波開始コマンドを受信したらHOMINGに移行
                 controller_state_ = ControllerState::HOMING;
+                
             }
             break;
         }
@@ -212,10 +237,11 @@ namespace custom_effort_controller
                     if (std::abs(joint_configs_[i].current_position) < position_tolerance_)
                     {
                         command = 0.0;
-                        controller_state_ = ControllerState::IDLE;
+                        controller_state_ = ControllerState::RUNNING_SINE;
+                        RCLCPP_INFO(get_node()->get_logger(), "Starting sine wave");
                     }
 
-                    command_interfaces_[i].set_value(command);
+                    joint_effort_command_interface_[i].get().set_value(command);
                 }
             }
             break;
@@ -239,7 +265,7 @@ namespace custom_effort_controller
                         2.0 * M_PI * joint_configs_[i].frequency * period.seconds();
                     double command =
                         joint_configs_[i].amplitude * std::sin(joint_configs_[i].phase);
-                    command_interfaces_[i].set_value(command);
+                    joint_effort_command_interface_[i].get().set_value(command);
                 }
             }
             break;

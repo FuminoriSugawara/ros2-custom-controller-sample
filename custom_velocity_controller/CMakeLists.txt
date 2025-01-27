@@ -16,7 +16,7 @@ add_library(${PROJECT_NAME} SHARED
   src/custom_velocity_controller.cpp
 )
 
-target_include_directories(${PROJECT_NAME} PRIVATE include)
+target_include_directories(${PROJECT_NAME} PRIVATE include ../include)
 
 ament_target_dependencies(${PROJECT_NAME}
   velocity_controllers
