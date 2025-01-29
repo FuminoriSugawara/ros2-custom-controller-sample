@@ -16,7 +16,7 @@ add_library(${PROJECT_NAME} SHARED
   src/custom_position_controller.cpp
 )
 
-target_include_directories(${PROJECT_NAME} PRIVATE include)
+target_include_directories(${PROJECT_NAME} PRIVATE include ../include)
 
 ament_target_dependencies(${PROJECT_NAME}
   position_controllers
